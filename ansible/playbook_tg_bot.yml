@@ -1,0 +1,187 @@
+---
+- name: Setup DB Master
+  hosts: db_master
+  become: yes
+  tasks:
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+        state: present
+        update_cache: yes
+
+    - name: Copy PostgreSQL config
+      copy:
+        src: config-postgresql
+        dest: /etc/postgresql/16/main/conf.d/replication.conf
+        owner: postgres
+        group: postgres
+        mode: '0644'
+
+    - name: Copy pg_hba.conf
+      copy:
+        src: pg_hba.conf
+        dest: /etc/postgresql/16/main/pg_hba.conf
+        owner: postgres
+        group: postgres
+        mode: '0640'
+
+    - name: Restart PostgreSQL
+      systemd:
+        name: postgresql
+        state: restarted
+
+    - name: Create replication user
+      become_user: postgres
+      postgresql_user:
+        name: replica_user
+        password: replica_pass
+        role_attr_flags: REPLICATION,LOGIN
+
+    - name: Create practice5 database
+      become_user: postgres
+      postgresql_db:
+        name: practice5
+
+    - name: Create emails table
+      become_user: postgres
+      postgresql_table:
+        db: practice5
+        name: emails
+        columns:
+          - id SERIAL PRIMARY KEY
+          - email VARCHAR(255) UNIQUE NOT NULL
+
+    - name: Create phones table
+      become_user: postgres
+      postgresql_table:
+        db: practice5
+        name: phones
+        columns:
+          - id SERIAL PRIMARY KEY
+          - phone VARCHAR(50) UNIQUE NOT NULL
+
+    - name: Copy .pgpass for replication
+      copy:
+        src: pgpass
+        dest: /var/lib/postgresql/.pgpass
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+- name: Setup DB Replica
+  hosts: db_replica
+  become: yes
+  tasks:
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+        update_cache: yes
+
+    - name: Stop PostgreSQL for sync
+      systemd:
+        name: postgresql
+        state: stopped
+
+    - name: Clear data directory
+      file:
+        path: /var/lib/postgresql/16/main
+        state: absent
+
+    - name: Copy data from master
+      become_user: postgres
+      shell: |
+        export PGPASSFILE=/var/lib/postgresql/.pgpass
+        pg_basebackup -h 192.168.213.100 -D /var/lib/postgresql/16/main -U replica_user -P -R
+      args:
+        creates: /var/lib/postgresql/16/main/PG_VERSION
+
+    - name: Copy pgpass for replica
+      copy:
+        src: pgpass
+        dest: /var/lib/postgresql/.pgpass
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+    - name: Configure hot standby
+      copy:
+        content: |
+          primary_conninfo = 'host=192.168.213.100 port=5432 user=replica_user password=replica_pass'
+          hot_standby = on
+        dest: /etc/postgresql/16/main/conf.d/standby.conf
+        owner: postgres
+        group: postgres
+        mode: '0644'
+
+    - name: Start PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+
+- name: Setup Bot
+  hosts: bot
+  become: yes
+  tasks:
+    - name: Install Python and pip
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - git
+        state: present
+        update_cache: yes
+
+    - name: Clone bot from GitHub
+      git:
+        repo: https://github.com/denis40in/devops_bot.git
+        dest: /opt/tg_bot
+        version: docker
+
+    - name: Install Python dependencies
+      pip:
+        requirements: /opt/tg_bot/bot/requirements.txt
+        executable: pip3
+
+    - name: Copy bot to /opt
+      copy:
+        src: /opt/tg_bot/bot/bot.py
+        dest: /opt/bot.py
+        remote_src: yes
+        mode: '0755'
+
+    - name: Create systemd service for bot
+      copy:
+        content: |
+          [Unit]
+          Description=Telegram Bot
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt
+          Environment="DB_HOST=192.168.213.100"
+          Environment="DB_PORT=5432"
+          Environment="DB_NAME=practice5"
+          Environment="DB_USER=postgres"
+          Environment="DB_PASSWORD=postgres"
+          ExecStart=/usr/bin/python3 /opt/bot.py
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/tg_bot.service
+
+    - name: Start bot
+      systemd:
+        name: tg_bot
+        state: started
+        enabled: yes
+        daemon_reload: yes
