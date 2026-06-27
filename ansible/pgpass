@@ -1,0 +1,2 @@
+192.168.213.100:5432:*:replica_user:replica_pass
+192.168.213.101:5432:*:replica_user:replica_pass
