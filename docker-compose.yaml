@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  db_master:
+    build: ./db
+    container_name: db_master
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: practice5
+    volumes:
+      - pg_master_data:/var/lib/postgresql/data
+    command: |
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=3
+      -c wal_keep_size=64
+
+  db_replica:
+    build: ./db_repl
+    container_name: db_replica
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: replica_user
+      POSTGRES_PASSWORD: replica_pass
+    volumes:
+      - pg_replica_data:/var/lib/postgresql/data
+    depends_on:
+      - db_master
+
+  bot:
+    build: ./bot
+    container_name: tg_bot
+    depends_on:
+      - db_master
+    environment:
+      DB_HOST: db_master
+      DB_PORT: 5432
+      DB_NAME: practice5
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+
+volumes:
+  pg_master_data:
+  pg_replica_data:
